@@ -1,3 +1,4 @@
+import math
 from pathlib import Path
 
 import torch
@@ -72,3 +73,42 @@ def get_map_name() -> str:
 def get_scene_usd_path() -> Path:
     env_name = get_map_name()
     return get_dataset_dir() / env_name / f"{env_name}_baked.usda"
+
+
+# ---------------------------------------------------------------------------------------------
+# Multi-apartment scene
+# ---------------------------------------------------------------------------------------------
+
+APARTMENT_SPACING = 30.0
+
+_MAPS_OVERRIDE: list[str] | None = None
+
+
+def set_map_names(names: list[str]) -> list[str]:
+    global _MAPS_OVERRIDE
+    if not names:
+        raise ValueError("Empty list of maps")
+    resolved = [resolve_map_name(n) for n in names]
+    _MAPS_OVERRIDE = list(dict.fromkeys(resolved))
+    return _MAPS_OVERRIDE
+
+
+def get_map_names() -> list[str]:
+    if _MAPS_OVERRIDE is not None:
+        return _MAPS_OVERRIDE
+    return list(dict.fromkeys(resolve_map_name(n) for n in load_cfg()["training_envs"]))
+
+
+def get_scene_usd_paths() -> list[Path]:
+    return [get_dataset_dir() / m / f"{m}_baked.usda" for m in get_map_names()]
+
+
+def get_apartment_origins(spacing: float = APARTMENT_SPACING) -> torch.Tensor:
+    num_apts = len(get_map_names())
+    n_cols = math.ceil(math.sqrt(num_apts))
+    origins = torch.zeros((num_apts, 3), dtype=torch.float32)
+    for k in range(num_apts):
+        row, col = divmod(k, n_cols)
+        origins[k, 0] = col * spacing
+        origins[k, 1] = row * spacing
+    return origins 
