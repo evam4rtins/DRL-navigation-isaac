@@ -1,71 +1,138 @@
+from __future__ import annotations
+
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import cv2
 import numpy as np
 import torch
 import yaml
-from isaaclab.sensors import RayCasterData
+
+if TYPE_CHECKING:
+    from isaaclab.sensors import RayCasterData
 
 #: Narrowest gap (in meters) the planner is allowed to route through.
 MIN_TRAVERSABLE_GAP = 0.20
 
+def _as_tensor(x) -> torch.Tensor:
+    return x.torch if hasattr(x, "torch") else x
 
 class MapManager:
-    def __init__(self, map_png_path: str | Path, map_yaml_path: str | Path, num_envs: int, device: torch.device):
-        with open(map_yaml_path, "r") as f:
-            self._img_meta = yaml.safe_load(f)
+    def __init__(
+            self,
+            map_png_paths: str | Path | list[str | Path],
+            map_yaml_paths: str | Path | list[str | Path], 
+            num_envs: int, device: torch.device | str, 
+            env_apt_ids: torch.Tensor | None = None, 
+        ):
 
+        if isinstance(map_png_paths, (str, Path)):
+            map_png_paths, map_yaml_paths = [map_png_paths], [map_yaml_paths]
+        assert len(map_png_paths) == len(map_yaml_paths)
+       
         self.device = device
         self.num_envs = num_envs
+        self.num_apts = len(map_png_paths)
+        self.map_img_paths = [str(p) for p in map_png_paths]
+        self.map_img_path = self.map_img_paths[0]
 
-        self.map_img_path = str(map_png_path)
-        self._map_img = cv2.imread(map_png_path, cv2.IMREAD_GRAYSCALE)
-        if self._map_img is None:
-            raise FileNotFoundError(f"Failed to read map image: {map_png_path}")
+        self._img_metas, self._map_imgs = [], []
+        for png, yml in zip(self.map_img_paths, map_yaml_paths):
+            with open(yml, "r") as f:
+                self._img_metas.append(yaml.safe_load(f))
+            img = cv2.imread(png, cv2.IMREAD_GRAYSCALE)
+            if img is None:
+                raise FileNotFoundError(f"Failed to read map image: {png}")
+            self._map_imgs.append(img)
+        
+        resolutions = {m["resolution"] for m in self._img_metas}
+        if len(resolutions) != 1:
+            raise ValueError(f"All maps must share one resolution, got {sorted(resolutions)}")
+        self._resolution = resolutions.pop()
 
-        # Static occupancy of the scene, shared by every environment. The per-environment lidar
-        # hits are merged onto it on demand, in `obstacle_masks`.
-        self._occupied = self._map_img == 0  # (H, W), True where occupied
+        # per-apartment geometry (K,2)
+        shapes = [img.shape for img in self._map_imgs]
+        self.map_shape = torch.tensor(shapes, dtype=torch.long, device=device)
+        self.map_origin = torch.tensor([m["origin"][:2] for m in self._img_metas], dtype=torch.float32, device=device)
+        self.H_max = max(h for h, _ in shapes)
+        self.W_max = max(w for _, w in shapes)
 
+        # static occupancy of every map, padded to (K, H_max, W_max)
+        self._occupied = np.ones((self.num_apts, self.H_max, self.W_max), dtype=bool)
+        for k, img in enumerate(self._map_imgs):
+            h, w = img.shape
+            self._occupied[k,:h,:w] = img == 0  # true = occupied
+        
+        # in which apartment each env is
+        if env_apt_ids is None:
+            env_apt_ids = torch.zeros(num_envs, dtype=torch.long)
+        assert env_apt_ids.shape == (num_envs,), "env_apt_ids must have one entry per env"
+        assert int(env_apt_ids.max()) < self.num_apts, "env_apt_ids refers to a missing apartment"
+        self.env_apt_ids = env_apt_ids.to(device=device, dtype=torch.long)
+        self._env_apt_ids_cpu = self.env_apt_ids.cpu().numpy()
+   
         # Remember: in costmaps 0 = free space, inf = occupied
-        self.local_costmaps = torch.zeros((num_envs, 1, *self._map_img.shape), dtype=torch.float32, device=device)
+        self.local_costmaps = torch.zeros((num_envs, 1, self.H_max, self.W_max), dtype=torch.float32, device=device)
 
     @property
     def resolution(self) -> float:
-        return self._img_meta["resolution"]
+        return self._resolution
 
     @property
     def origin(self) -> tuple[float, float]:
-        return self._img_meta["origin"][:2]
+        """ origin of apartment 0 (single-map version) """
+        return self.apt_origin(0)
 
     @property
     def shape(self) -> tuple[int, int]:
-        return self._map_img.shape
+        """ (H, W) of apartment 0 (single-map version) """
+        return self.apt_shape(0)
+    
+    def apt_origin(self, apt_id: int) -> tuple[float, float]:
+        return self._img_metas[apt_id]["origin"][:2]
+    
+    def apt_shape(self, apt_id: int) -> tuple[int, int]:
+        return self._map_imgs[apt_id].shape
+    
+    def apt_map_img(self, apt_id: int) -> np.ndarray:
+        return self._map_imgs[apt_id].copy()
     
     @property
+    def map_img(self) -> np.ndarray:
+        """ floor plan of apartment 0 (single-map version) """
+        return self.apt_map_img(0)
+
+    @property
     def occupancy_gridmap(self) -> np.ndarray:
-        gray_pixels = (self._map_img > 1) & (self._map_img < 254)
-        white_pixels = self._map_img >= 254
-        black_pixels = self._map_img <= 1
+        """ ROS occupancy grid of apartment 0 (single map version) """
+        return self.apt_occupancy_gridmap(0)
+    
+    def apt_occupancy_gridmap(self, apt_id: int) -> np.ndarray:
+        img = self._map_imgs[apt_id]
+        gray_pixels = (img > 1) & (img < 254)
+        white_pixels = img >= 254
+        black_pixels = img <= 1
         # use -1, [0...100] to represent respectively unknown, free, occupied.
-        ogm = self._map_img.astype(np.int8, copy=True)
+        ogm = img.astype(np.int8, copy=True)
         ogm[gray_pixels] = -1
         ogm[white_pixels] = 0
         ogm[black_pixels] = 100
         return ogm
 
-    @property
-    def map_img(self) -> np.ndarray:
-        return self._map_img.copy()
-
-    def obstacle_masks(self, env_ids: torch.Tensor) -> np.ndarray:
-        """Returns a (len(env_ids), H, W) bool array with the occupied cells seen by each environment.
+    def obstacle_masks(self, env_ids: torch.Tensor) -> list[np.ndarray]:
+        """Returns a list of masks, one per env, cropped to each map's size
 
         This is the only costmap data that has to leave the device: the inflation itself runs on the
         host, next to the A* that consumes it (see `PathManager._inflate_and_plan`).
         """
-        lidar_hits = self.local_costmaps[env_ids, 0] != 0.0  # (len(env_ids), H, W)
-        return self._occupied | lidar_hits.cpu().numpy()
+        env_ids_cpu = env_ids.cpu().numpy()
+        lidar_hits = (self.local_costmaps[env_ids, 0] != 0.0).cpu().numpy()  # (n, H_max, W_max)
+        masks = []
+        for i, env_id in enumerate(env_ids_cpu):
+            k = self._env_apt_ids_cpu[env_id]
+            h, w = self._map_imgs[k].shape
+            masks.append(self._occupied[k, :h, :w] | lidar_hits[i, :h, :w])
+        return masks
 
     @property
     def clearance_px(self) -> float:
@@ -102,16 +169,15 @@ class MapManager:
         self.local_costmaps[env_ids] = 0.0
 
     def update_local_costmap(self, lidar_scan: RayCasterData, env_origins: torch.Tensor):
-        ## update the local costmap according to the full lidar scan
-
-        # filter points further than thresh
+        """mark the lidar hits closer than 3m in each env's costmap"""
         thresh = 3.0
         ray_hits_w = lidar_scan.ray_hits_w.torch  # (B, N_rays, 3), warp-backed ProxyArray in IsaacLab 3.0
-        scan_dist = torch.norm(ray_hits_w - lidar_scan.pos_w.torch.unsqueeze(1), dim=-1)  # (B, N_rays)
+        pos_w = _as_tensor(lidar_scan.pos_w) # (B, 3)
+        scan_dist = torch.norm(ray_hits_w - pos_w.unsqueeze(1), dim=-1)  # (B, N_rays)
         mask = scan_dist < thresh  # (B, N_rays)
 
         scan_local = ray_hits_w - env_origins.unsqueeze(1)
-        scan_map_coords = self.local_to_map_coords(scan_local)  # (B, N_rays, 2)
+        scan_map_coords = self.local_to_map_coords(scan_local, self.env_apt_ids)  # (B, N_rays, 2)
 
         row = scan_map_coords[..., 0]
         col = scan_map_coords[..., 1]
@@ -120,38 +186,45 @@ class MapManager:
         batches = torch.arange(self.num_envs, device=self.device)[:, None].expand(B, N)
         self.local_costmaps[batches[mask], 0, row[mask], col[mask]] = torch.inf
 
-    def map_to_local_coords(self, map_coords: torch.Tensor) -> torch.Tensor:
+    def _gather(self, values: torch.Tensor, apt_ids, batch_dims: int) -> torch.Tensor:
+        # pick the rows of a per-apartment table ``values`` (K, C) for ``apt_ids``, shaped to broadcast over points.
+        ids = torch.as_tensor(0 if apt_ids is None else apt_ids, dtype=torch.long, device=values.device)
+        rows = values[ids]
+        missing = batch_dims - ids.dim()
+        assert missing >= 0, "apt_ids has more dims than the points"
+        return rows.reshape(*ids.shape, *([1] * missing), values.shape[-1])
+
+    def map_to_local_coords(self, map_coords: torch.Tensor, apt_ids=None) -> torch.Tensor:
         assert len(map_coords.shape) == 2 and map_coords.shape[1] == 2, "Expected map_coords to have shape (N, 2)"
         map_coords = map_coords.clone()
-        _, W = self.shape
+        W = self._gather(self.map_shape[:, 1:2], apt_ids, 1)[..., 0]  # (N,) or (1,): map width of each point
+        origin = self._gather(self.map_origin, apt_ids, 1)  # (N, 2) or (1, 2)
+        
         map_coords[:, 1] = W - map_coords[:, 1]  # flip x axis
         map_xy = map_coords[:, [1, 0]]  # swap from (row,col) to (x, y)
-
-        x, y = self.origin
-
-        origin = torch.tensor([x, y], device=self.device)
 
         scaled = map_xy * self.resolution  # (N, 2)
         return scaled + origin  # (N, 2)
 
-    def local_to_map_coords(self, local_coords: torch.Tensor) -> torch.Tensor:
+    def local_to_map_coords(self, local_coords: torch.Tensor, apt_ids=None) -> torch.Tensor:
         # data can be (B, N, 2|3) or (N, 2|3)
         if local_coords.size(-1) > 2:
             local_coords = local_coords[..., :2]  # only consider x, y
 
         local_xy = local_coords.clone()
-
-        x, y = self.origin
-        origin = torch.tensor([x, y], device=self.device)
+        batch_dims = local_xy.dim() - 1
+        origin = self._gather(self.map_origin, apt_ids, batch_dims)  # broadcastable to local_xy
+        shape = self._gather(self.map_shape, apt_ids, batch_dims).to(torch.int32)  # (..., 2): H, W of each point
+        H, W = shape[..., 0], shape[..., 1]
 
         scaled = ((local_xy - origin) / self.resolution).to(torch.int)
 
-        H, W = self.shape
         scaled[..., 0] = W - scaled[..., 0]  # flip x axis
         map_coords = scaled[..., [1, 0]]  # swap to (row, col)
 
-        map_coords[..., 0] = torch.clamp(map_coords[..., 0], 0, H - 1)  # row
-        map_coords[..., 1] = torch.clamp(map_coords[..., 1], 0, W - 1)  # col
+        zero = torch.zeros_like(H)
+        map_coords[..., 0] = torch.minimum(torch.maximum(map_coords[..., 0], zero), H - 1)  # row
+        map_coords[..., 1] = torch.minimum(torch.maximum(map_coords[..., 1], zero), W - 1)  # col
         return map_coords
 
     # def debug_vis(self):
