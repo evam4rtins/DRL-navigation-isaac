@@ -10,32 +10,54 @@ from isaaclab.utils.math import quat_from_euler_xyz
 import pyastar2d
 from navigation_env.managers.map_manager import MapManager
 from preprocessing import voronoi
-from cfg.CFG import NAVPOINTS_FILE, get_map_name
+from cfg.CFG import NAVPOINTS_FILE
 
 
 class PathManager:
     def __init__(
-        self, scene_path: str | Path, map_mgr: MapManager, num_envs: int, device: torch.device, subgoal_dist: float = 0.3
+        self, scene_path: str | Path | list[str | Path], 
+        map_mgr: MapManager, 
+        num_envs: int, 
+        device: torch.device, 
+        subgoal_dist: float = 0.3
     ):
         self.device = device
-        self.scene_usd_path = Path(scene_path)
         self.map_manager = map_mgr
         self.point_dist = subgoal_dist
 
+        scene_paths = [scene_path] if isinstance(scene_path, (str, Path)) else list(scene_path)
+        self.scene_usd_paths = [Path(p) for p in scene_paths]
+        self.scene_usd_path = self.scene_usd_paths[0] # single map version
+        assert len(self.scene_usd_paths) == map_mgr.num_apts, "one scene path per MapManager map"
+        
+        self.map_names = [p.parent.name for p in self.scene_usd_paths]
+        self.env_apt_ids = map_mgr.env_apt_ids
+        self._env_apt_ids_cpu = self.env_apt_ids.cpu().numpy()
+
+        # hand made task of each apartment
+        self.apt_manual_tasks : list[dict | None] = [None] * map_mgr.num_apts
         if NAVPOINTS_FILE.exists():
             with open(NAVPOINTS_FILE, "r") as f:
-                MAP_NAME = get_map_name()
-                self.manual_tasks = yaml.safe_load(f)[MAP_NAME]  # type: ignore
-
-        self.graph, coords = voronoi.compute_voronoi_graph(
-            map_path=map_mgr.map_img_path,
-            blur_radius=15,
-            min_node_distance=15,
-            plot_graph=True,
-            filepath=str(self.scene_usd_path),
-        )
-
-        self.nodes = torch.Tensor([coords[idx] for idx in self.graph.nodes]).to(device)
+                all_tasks = yaml.safe_load(f)
+            self.apt_manual_tasks = [all_tasks.get(name) for name in self.map_names]
+        if self.apt_manual_tasks[0] is not None:
+            self.manual_tasks = self.apt_manual_tasks[0]  # single map version
+        
+        # vonoroi graph of each apartment
+        self.graphs, self.apt_nodes = [], []
+        for k in range(map_mgr.num_apts):
+            graph, coords = voronoi.compute_voronoi_graph(
+                map_path=map_mgr.map_img_paths[k],
+                blur_radius=15,
+                min_node_distance=15,
+                plot_graph=True,
+                filepath=str(self.scene_usd_paths[k]),
+            )
+            self.graphs.append(graph)
+            self.apt_nodes.append(torch.Tensor([coords[idx] for idx in graph.nodes]).to(self.device)) # (N_k, 2) map coords
+        # single map version
+        self.graph = self.graphs[0]
+        self.nodes = self.apt_nodes[0]
 
         # cache local and map coords of start/goal
         self.start_pos_map = torch.zeros((num_envs, 2), dtype=torch.float32, device=device)
@@ -65,14 +87,17 @@ class PathManager:
         # A* threads
         self._executor = ThreadPoolExecutor(max_workers=64)
 
-    def map_to_local_coords(self, map_coords: torch.Tensor) -> torch.Tensor:
-        return self.map_manager.map_to_local_coords(map_coords)
+    def map_to_local_coords(self, map_coords: torch.Tensor, apt_ids=None) -> torch.Tensor:
+        return self.map_manager.map_to_local_coords(map_coords, apt_ids)
 
-    def local_to_map_coords(self, local_coords: torch.Tensor) -> torch.Tensor:
-        return self.map_manager.local_to_map_coords(local_coords)
+    def local_to_map_coords(self, local_coords: torch.Tensor, apt_ids=None) -> torch.Tensor:
+        return self.map_manager.local_to_map_coords(local_coords, apt_ids)
 
-    def sample_node_ids(self, num_samples: int) -> torch.Tensor:
-        return torch.randint(0, self.nodes.shape[0], (num_samples,), device=self.device)
+    def _apt(self, env_id) -> int:
+        return int(self._env_apt_ids_cpu[int(env_id)])
+
+    def sample_node_ids(self, num_samples: int, apt_id: int = 0) -> torch.Tensor:
+        return torch.randint(0, self.apt_nodes[apt_id].shape[0], (num_samples,), device=self.device)
 
     def sample_nav_task(self, env_ids: torch.Tensor, sample_voronoi_prob: float = 0.25) -> None:
         # TODO: add distance_based sampling. For the time being,
@@ -85,7 +110,7 @@ class PathManager:
 
             self.start_pos_map[id] = start_coord_map
             self.goal_pos_map[id] = goal_coord_map
-            self.goal_pos_local[id] = self.map_to_local_coords(goal_coord_map.unsqueeze(0))[0]
+            self.goal_pos_local[id] = self.map_to_local_coords(goal_coord_map.unsqueeze(0), self._apt(id))[0]
 
         # set length buffers to minimum on reset, they will be updated together with the global plan
         self.initial_path_length[env_ids] = self.point_dist
@@ -97,14 +122,15 @@ class PathManager:
         self.duration_history[env_ids, 0] = normalized_durations
 
     def sample_voronoi_task(self, env_id: int) -> tuple[torch.Tensor, torch.Tensor]:
-        random_node = random.randint(0, self.nodes.shape[0] - 1)
+        nodes = self.apt_nodes[self._apt(env_id)]
+        random_node = random.randint(0, nodes.shape[0] - 1)
         current_node = random_node
 
         while random_node == current_node:
-            random_node = random.randint(0, self.nodes.shape[0] - 1)
+            random_node = random.randint(0, nodes.shape[0] - 1)
 
-        start_pos_map = self.nodes[current_node].clone()
-        goal_pos_map = self.nodes[random_node].clone()
+        start_pos_map = nodes[current_node].clone()
+        goal_pos_map = nodes[random_node].clone()
 
         # for voronoi tasks we use random yaw
         self.start_yaw[env_id] = torch.rand(1) * 2 * torch.pi - torch.pi
@@ -113,9 +139,11 @@ class PathManager:
         return start_pos_map, goal_pos_map
 
     def sample_manual_task(self, env_id: int) -> tuple[torch.Tensor, torch.Tensor]:
-        if not hasattr(self, "manual_tasks"):
-            raise ValueError("No manual task file found for this scene!, create it with the task-annotator tool")
-        pair_list = self.manual_tasks["pairs"]
+        k = self._apt(env_id)
+        tasks = self.apt_manual_tasks[k]
+        if tasks is None:
+            raise ValueError(f"No manual task found for {self.map_names[k]}!, create it with the task-annotator tool")
+        pair_list = tasks["pairs"]
         pair = random.choice(pair_list)
 
         start, goal = pair["start"], pair["goal"]
@@ -150,12 +178,12 @@ class PathManager:
         assert (
             robot_pos_w.shape[0] == env_ids.shape[0] == env_origins.shape[0]
         ), "Batch size of robot positions, env origins, and env_ids must match"
-
+        apt_ids = self.env_apt_ids[env_ids]
         robot_pos_local = robot_pos_w - env_origins
-        robot_map_coords = self.local_to_map_coords(robot_pos_local)
+        robot_map_coords = self.local_to_map_coords(robot_pos_local, apt_ids)
 
 
-        obstacles_cpu = self.map_manager.obstacle_masks(env_ids)  # (num_envs, H, W)
+        obstacles_cpu = self.map_manager.obstacle_masks(env_ids)  # one (H_k, W_k) mask per env
         start_coords = robot_map_coords.int().cpu().numpy()  # (num_envs, 2)
         goal_coords = self.goal_pos_map[env_ids].int().cpu().numpy()  # (num_envs, 2)
 
@@ -174,6 +202,7 @@ class PathManager:
             )
 
         for idx, env_id in enumerate(env_ids):
+            k = self._apt(env_id)
             path, start_is_free = paths[idx].result()
             if path is None or len(path) == 0:
                 # if I am in a valid cell, but no path is found, I just stand still
@@ -182,7 +211,7 @@ class PathManager:
                     self.path_tensors[env_id] = None
                 # if previous path exists keep it (this will happen when robot pos is mapped onto an occupied cell)
                 if self.path_tensors[env_id] is None:  # set to current location
-                    robot_pos_local = self.map_to_local_coords(robot_map_coords[idx].unsqueeze(0))
+                    robot_pos_local = self.map_to_local_coords(robot_map_coords[idx].unsqueeze(0), k)
                     self.path_tensors[env_id] = robot_pos_local
                     self._write_path_buf(env_id, robot_pos_local)
                     self.current_path_length[env_id] = 0.0  # reset
@@ -195,7 +224,7 @@ class PathManager:
 
             path_tensor[-1] = self.goal_pos_map[env_id]  # ensure goal is included
 
-            world_path = self.map_to_local_coords(path_tensor)  # (num_path_points, 2)
+            world_path = self.map_to_local_coords(path_tensor, k)  # (num_path_points, 2)
             self.path_tensors[env_id] = world_path
             self._write_path_buf(env_id, world_path)
 
@@ -220,7 +249,7 @@ class PathManager:
         robot_z_pos: float = 0.0,
     ) -> torch.Tensor:
         map_coords = self.start_pos_map[env_ids]
-        local_coords = self.map_to_local_coords(map_coords)
+        local_coords = self.map_to_local_coords(map_coords, self.env_apt_ids[env_ids])
 
         num_robots = env_ids.shape[0]
         z_col = torch.zeros((num_robots, 1), device=self.device) + robot_z_pos  # set z to default
