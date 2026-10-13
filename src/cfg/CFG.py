@@ -112,3 +112,8 @@ def get_apartment_origins(spacing: float = APARTMENT_SPACING) -> torch.Tensor:
         origins[k, 0] = col * spacing
         origins[k, 1] = row * spacing
     return origins 
+
+def get_env_apartments_ids(num_envs: int, num_apartments: int | None = None) -> torch.Tensor: 
+    if num_apartments is None:
+        num_apartments = len(get_map_names())
+    return torch.arange(num_envs) % num_apartments

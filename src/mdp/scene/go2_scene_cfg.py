@@ -11,7 +11,7 @@ from isaaclab.sensors.camera import TiledCameraCfg
 from isaaclab.sim.spawners.sensors.sensors_cfg import PinholeCameraCfg
 from isaaclab.utils import configclass
 
-from cfg.CFG import get_scene_usd_path
+from cfg.CFG import get_scene_usd_path, get_apartment_origins, get_scene_usd_paths
 from mdp.scene.moving_obstacles_cfg import get_obstacles_cfg
 from mdp.scene.robot_cfg import UNITREE_GO2_CFG
 
@@ -122,6 +122,22 @@ class Go2FullSceneLidarCfg(Go2BaseCfg):
             ),
         )
 
+@configclass
+class Go2MultiApartmentSceneCfg(Go2BaseCfg):
+    """Multi-apartment scene where every map is spawned as a global prim"""
+
+    def __post_init__(self):
+        origins = get_apartment_origins()
+        for k, usd_path in enumerate(get_scene_usd_paths()):
+            setattr(
+                self,
+                f"apt_{k}", 
+                AssetBaseCfg(
+                    prim_path=f"/World/apt_{k}", # shared by all envs
+                    spawn=sim.UsdFileCfg(usd_path=str(usd_path)),
+                    init_state=AssetBaseCfg.InitialStateCfg(pos=tuple(origins[k].tolist())),
+                )
+            )
 
 CAMERA_CFG = TiledCameraCfg(
     prim_path="{ENV_REGEX_NS}/Go2/base/front_cam",
