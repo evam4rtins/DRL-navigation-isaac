@@ -72,3 +72,35 @@ class Go2LidarEmpty(ManagerBasedRLEnvCfg):
         self.sim.render_interval = self.decimation
 
         logger.info("Go2 Empty environment with Lidar only initialized")
+
+
+@configclass
+class Go2LidarMultiApartment(ManagerBasedRLEnvCfg):
+    
+    actions = actions.ActionsCfg()
+    observations = obs.LidarOnlyCfg()
+    rewards = rewards.RewardsCfg()
+    terminations = terminations.TerminationsCfg()
+    events = events.BaseEventsCfg()
+    curriculum = curriculum.CurriculumCfg()
+
+    obs_groups = { 
+        "policy" : ["velocity_buffer", "action_buffer", "global_plan", "lidar"],
+        "critic" : ["velocity_buffer", "action_buffer", "global_plan", "lidar"], 
+    }
+
+    def __post_init__(self) -> None:
+        self.scene = scene.Go2MultiApartmentSceneCfg(
+            num_envs=1, env_spacing=0.0, replicate_physics=False, filter_collisions=True
+        )
+        self.sim.dt = PARAMS["dt"]
+        self.sim.device = PARAMS["device"]
+        self.sim.use_fabric = PARAMS["use_fabric"]
+        self.sim.render = PARAMS["render"]
+        self.sim.enable_scene_query_support = True
+
+        self.episode_length_s = PARAMS["episode_length_s"]
+        self.decimation = PARAMS["decimation"]
+        self.sim.render_interval = self.decimation
+
+        logger.info("Go2 multi-apartment environment with Lidar only initialized")

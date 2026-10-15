@@ -14,6 +14,7 @@ from isaaclab.utils import configclass
 from cfg.CFG import get_scene_usd_path, get_apartment_origins, get_scene_usd_paths
 from mdp.scene.moving_obstacles_cfg import get_obstacles_cfg
 from mdp.scene.robot_cfg import UNITREE_GO2_CFG
+from mdp.scene.multi_apartment import spawn_static_apartment
 
 
 @configclass
@@ -128,16 +129,41 @@ class Go2MultiApartmentSceneCfg(Go2BaseCfg):
 
     def __post_init__(self):
         origins = get_apartment_origins()
-        for k, usd_path in enumerate(get_scene_usd_paths()):
+        usd_paths = get_scene_usd_paths()
+        for k, usd_path in enumerate(usd_paths):
             setattr(
                 self,
-                f"apt_{k}", 
+                f"apt_{k}",
                 AssetBaseCfg(
-                    prim_path=f"/World/apt_{k}", # shared by all envs
-                    spawn=sim.UsdFileCfg(usd_path=str(usd_path)),
+                    prim_path=f"/World/apt_{k}",  # shared by all envs
+                    spawn=sim.UsdFileCfg(usd_path=str(usd_path), func=spawn_static_apartment),
                     init_state=AssetBaseCfg.InitialStateCfg(pos=tuple(origins[k].tolist())),
-                )
+                ),
             )
+
+        static_targets = [
+            MultiMeshRayCasterCfg.RaycastTargetCfg(
+                prim_expr=f"/World/apt_{k}/Meshes/static_objects",
+                is_shared=False,
+                track_mesh_transforms=False,
+            )
+            for k in range(len(usd_paths))
+        ]
+        self.lidar = MultiMeshRayCasterCfg(
+            prim_path="{ENV_REGEX_NS}/Go2/radar",
+            update_period=0.05,  # 20Hz
+            offset=RayCasterCfg.OffsetCfg(pos=(0.4, 0.0, 0.0)),
+            ray_alignment="yaw",
+            pattern_cfg=patterns.LidarPatternCfg(
+                channels=10,
+                vertical_fov_range=(0, 30),
+                horizontal_fov_range=(0, 360),
+                horizontal_res=3.0,
+            ),
+            debug_vis=False,
+            mesh_prim_paths=["/World/ground", *static_targets],
+        )
+
 
 CAMERA_CFG = TiledCameraCfg(
     prim_path="{ENV_REGEX_NS}/Go2/base/front_cam",

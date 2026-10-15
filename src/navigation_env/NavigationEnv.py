@@ -11,20 +11,47 @@ from navigation_env.managers.camera_manager import CameraManager
 from navigation_env.managers.map_manager import MapManager
 from navigation_env.managers.path_manager import PathManager
 
+from cfg.CFG import get_apartment_origins, get_env_apartments_ids
+from mdp.scene.go2_scene_cfg import Go2MultiApartmentSceneCfg
+from mdp.scene.multi_apartment import restore_grid_origins, use_apartment_origins
 
 class NavEnv(ManagerBasedRLEnv):
     def __init__(self, cfg: ManagerBasedRLEnvCfg, render_mode: str | None = None, **kwargs):
-        super().__init__(cfg, render_mode, **kwargs)
-
         assert "scene_path" in kwargs, "Must provide scene_path as a keyword argument"
-        scene_path = Path(kwargs["scene_path"])
-        map_img_path = str(scene_path.parent / (scene_path.stem + "_map.png"))
-        map_yaml_path = str(scene_path.parent / (scene_path.stem + "_map.yaml"))
-        self._map_manager = MapManager(map_img_path, map_yaml_path, self.num_envs, device=self.device)
+        scene_paths = kwargs["scene_path"]
+        scene_paths = [scene_paths] if isinstance(scene_paths, (str, Path)) else list(scene_paths)
+        scene_paths = [Path(p) for p in scene_paths]
+        num_apts = len(scene_paths)
+
+        self.multi_apartment = isinstance(cfg.scene, Go2MultiApartmentSceneCfg)
+        if self.multi_apartment:
+            num_apt_prims = sum(1 for name in vars(cfg.scene) if name.startswith("apt_"))
+            assert num_apt_prims == num_apts, f"Scene has {num_apt_prims} apartments but {num_apts} scene paths"
+            use_apartment_origins(get_apartment_origins())
+        else:
+            assert num_apts == 1, "A list of scene paths needs the multi-apartment scene"
+
+        try:
+            super().__init__(cfg, render_mode, **kwargs)
+        finally: 
+            restore_grid_origins()
+        
+        env_apt_ids = get_env_apartments_ids(self.num_envs, num_apts).to(self.device)
+        if self.multi_apartment:
+            expected = get_apartment_origins().to(self.device)[env_apt_ids]
+            assert torch.allclose(self.scene.env_origins, expected, atol=1e-4), (
+                "env_origins are not the apartment origins: did the grid_transforms patch stop working?"
+            )
+
+        map_img_paths = [str(p.parent / (p.stem + "_map.png")) for p in scene_paths]
+        map_yaml_paths = [str(p.parent / (p.stem + "_map.yaml")) for p in scene_paths]
+        self._map_manager = MapManager(
+            map_img_paths, map_yaml_paths, self.num_envs, device=self.device, env_apt_ids=env_apt_ids
+            )
 
         self.path_manager = PathManager(
-            scene_path=scene_path, map_mgr=self._map_manager, num_envs=self.num_envs, device=self.device
-        )
+            scene_path=scene_paths, map_mgr=self._map_manager, num_envs=self.num_envs, device=self.device
+            )
 
         # Action buffer with the past 5 actions (Δx, Δy, Δtheta)
         self._action_buffer = torch.zeros((self.num_envs, 5, 3), dtype=torch.float32, device=self.device)
@@ -49,6 +76,10 @@ class NavEnv(ManagerBasedRLEnv):
         self.nominal_weight = 0.0  # scale for nominal action
 
         self.episode_counter = torch.zeros(self.num_envs, dtype=torch.float32, device=self.device)
+
+    @property
+    def env_apt_ids(self) -> torch.Tensor:
+        return self._map_manager.env_apt_ids #(num_envs,) apartment index of every env
 
     def step(self, action: torch.Tensor) -> VecEnvStepReturn:
         if "log" in self.extras:  # Fixes wrong logging of rewards and dones in the first step after reset
