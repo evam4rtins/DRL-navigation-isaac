@@ -77,6 +77,10 @@ class NavEnv(ManagerBasedRLEnv):
 
         self.episode_counter = torch.zeros(self.num_envs, dtype=torch.float32, device=self.device)
 
+        # last success rate / path length per apartment, reused at steps where an apartment had no reset
+        self._apt_success = torch.zeros(num_apts, device=self.device)
+        self._apt_path_len = torch.zeros(num_apts, device=self.device)
+
     @property
     def env_apt_ids(self) -> torch.Tensor:
         return self._map_manager.env_apt_ids #(num_envs,) apartment index of every env
@@ -107,8 +111,24 @@ class NavEnv(ManagerBasedRLEnv):
 
         self.update_follow_camera()
         self._update_lidar_buffer()
+        if self.multi_apartment:
+            self._log_apartment_stats()
 
         return retVal
+
+    def _log_apartment_stats(self) -> None:
+        if "log" not in self.extras:  # only written at steps where some env was reset
+            return
+        done = self.reset_buf.bool()
+        goal = self.termination_manager.get_term("goal_reached").bool()
+        for k, name in enumerate(self.path_manager.map_names):
+            ended = done & (self.env_apt_ids == k)
+            if ended.any():
+                self._apt_success[k] = goal[ended].float().mean()
+                self._apt_path_len[k] = self.path_manager.initial_path_length[ended].float().mean()
+            self.extras["log"][f"Apartment_success/{name}"] = self._apt_success[k].item()
+            self.extras["log"][f"Apartment_path_length/{name}"] = self._apt_path_len[k].item()
+
 
     def teleport_robots(self, env_ids: torch.Tensor) -> None:
         ## set cartesian position, quaternion orientation in (x, y, z, w), and linear and angular velocity

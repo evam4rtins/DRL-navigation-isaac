@@ -6,10 +6,12 @@ from isaaclab.app import AppLauncher
 # # add argparse arguments
 parser = argparse.ArgumentParser(description="Tutorial on basic RL environment.")
 parser.add_argument(
+    "--maps",
     "--map",
-    type=str,
+    nargs="+",
     required=True,
-    help="Map to run on, e.g. 40, 0040 or kujiale_0040. Overrides current_env in dataset_cfg.yaml.",
+    help="Map(s) to run on, e.g. 40, 0040 or kujiale_0040. One map for the single-map tasks,"
+     "one or more for go2_lidar_multi. Overrides current_env in dataset_cfg.yaml.",
 )
 parser.add_argument("--video", action="store_true", default=False, help="Record videos during training.")
 parser.add_argument(
@@ -78,20 +80,35 @@ from loguru import logger
 from omegaconf import DictConfig
 from rsl_rl.runners import OnPolicyRunner
 
-from cfg.CFG import CHECKPOINT_DIR, get_map_name, get_scene_usd_path, set_map_name
+from cfg.CFG import CHECKPOINT_DIR, get_map_name, get_scene_usd_path, set_map_name, get_scene_usd_paths, set_map_names
 from policy.NavPolicyv2 import go2_policy_cfg, load_policy_checkpoint, make_go2_policy_cfg
 from tasks.task_utils import get_env_config
 
-set_map_name(args_cli.map)  # before anything reads the map back out of cfg.CFG
+MULTI_APARTMENT_TASKS = {"go2_lidar_multi"}
+
+if args_cli.task in MULTI_APARTMENT_TASKS:
+    MAP_NAMES = set_map_names(args_cli.maps)
+    SCENE_PATH = get_scene_usd_paths()  # one scene per apartment
+    RUN_NAME = f"multi_{len(MAP_NAMES)}maps"  
+else:
+    if len(args_cli.maps) != 1:
+        raise ValueError(f"Task {args_cli.task} uses one map, got {args_cli.maps}. Use --task go2_lidar_multi.")
+    MAP_NAMES = [set_map_name(args_cli.maps[0])]
+    SCENE_PATH = get_scene_usd_path()
+    RUN_NAME = MAP_NAMES[0]  
 
 
 @hydra.main(config_path=None)
 def run_simulator(cfg: DictConfig):
-    run_info = get_map_name() + datetime.now().strftime("_%m-%d_%H-%M")
+    run_info = RUN_NAME + datetime.now().strftime("_%m-%d_%H-%M")
     log_root_path = os.path.abspath(os.path.join(get_original_cwd(), "logs", "rsl_rl", "training"))
     logger.info(f"Logging experiment in directory: {log_root_path}")
     logger.info(f"Exact experiment name requested from command line: {run_info}")
     log_dir = os.path.join(log_root_path, run_info)
+    os.makedirs(log_dir, exist_ok=True)
+    with open(os.path.join(log_dir, "maps.txt"), "w") as f:  
+        f.write("\n".join(MAP_NAMES) + "\n")
+    logger.info(f"Training maps ({len(MAP_NAMES)}): {MAP_NAMES}")
 
     # Go2 Env setup
     environment_cfg = get_env_config(args_cli.task)
@@ -107,7 +124,7 @@ def run_simulator(cfg: DictConfig):
         if not args_cli.debug_vis
         else "navigation_env.EnvDebugWrapper:NavEnvDebugView",
         disable_env_checker=True,
-        kwargs={"scene_path": get_scene_usd_path(), "use_long_horizon": False, "debug_vis": args_cli.debug_vis, "sample_voronoi_probability": 0.25},
+        kwargs={"scene_path": SCENE_PATH, "use_long_horizon": False, "debug_vis": args_cli.debug_vis, "sample_voronoi_probability": 0.25},
     )
     env = gym.make(
         "Isaac-indoor-navigation-go2-v0",
@@ -155,16 +172,15 @@ def run_simulator(cfg: DictConfig):
             go2_policy_cfg["max_iterations"] if args_cli.max_iterations is None else args_cli.max_iterations
         ),
     )
-    store_final_policy(ppo_runner, CHECKPOINT_DIR)
+    store_final_policy(ppo_runner, CHECKPOINT_DIR, RUN_NAME)
 
-def store_final_policy(ppo_runner: OnPolicyRunner, ckpt_dir: Path) -> None:
-    # final path should be ckpts/unitree_go2_nav/{map_name}_policy.pt
-    policy_name = get_map_name() + "_policy.pt"
+def store_final_policy(ppo_runner: OnPolicyRunner, ckpt_dir: Path, run_name: str) -> None:
+    # final path should be ckpts/unitree_go2_nav/{run_name}_policy.pt (map name, or multi_<K>maps)
+    policy_name = run_name + "_policy.pt"
     policy_save_path = ckpt_dir / "unitree_go2_nav" / policy_name
     policy_save_path.parent.mkdir(parents=True, exist_ok=True)
     if policy_save_path.exists():
-
-        new_name = f"old_{get_map_name()}_policy_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.pt"
+        new_name = f"old_{run_name}_policy_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.pt"
         policy_save_path.rename(policy_save_path.parent / new_name)
 
     ppo_runner.save(policy_save_path)
