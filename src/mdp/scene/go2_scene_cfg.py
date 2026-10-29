@@ -14,7 +14,7 @@ from isaaclab.utils import configclass
 from cfg.CFG import get_scene_usd_path, get_apartment_origins, get_scene_usd_paths
 from mdp.scene.moving_obstacles_cfg import get_obstacles_cfg
 from mdp.scene.robot_cfg import UNITREE_GO2_CFG
-from mdp.scene.multi_apartment import spawn_static_apartment
+from mdp.scene.multi_apartment import spawn_static_apartment, spawn_dynamic_only
 
 
 @configclass
@@ -151,6 +151,7 @@ class Go2MultiApartmentSceneCfg(Go2BaseCfg):
         ]
         self.lidar = MultiMeshRayCasterCfg(
             prim_path="{ENV_REGEX_NS}/Go2/radar",
+            spawn=None, 
             update_period=0.05,  # 20Hz
             offset=RayCasterCfg.OffsetCfg(pos=(0.4, 0.0, 0.0)),
             ray_alignment="yaw",
@@ -164,6 +165,20 @@ class Go2MultiApartmentSceneCfg(Go2BaseCfg):
             mesh_prim_paths=["/World/ground", *static_targets],
         )
 
+@configclass
+class Go2MultiApartmentDynSceneCfg(Go2MultiApartmentSceneCfg):
+    """ Multi-apartment scene + one coply of the doors and chairs per robot """
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.dyn = AssetBaseCfg(
+            prim_path="{ENV_REGEX_NS}/dyn",
+            spawn=sim.MultiAssetSpawnerCfg(
+            assets_cfg=[sim.UsdFileCfg(usd_path=str(p), func=spawn_dynamic_only) for p in get_scene_usd_paths()],
+            random_choice=False,
+            ),
+        )
+    
 
 CAMERA_CFG = TiledCameraCfg(
     prim_path="{ENV_REGEX_NS}/Go2/base/front_cam",

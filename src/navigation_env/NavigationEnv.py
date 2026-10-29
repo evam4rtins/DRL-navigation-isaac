@@ -13,7 +13,7 @@ from navigation_env.managers.path_manager import PathManager
 
 from cfg.CFG import get_apartment_origins, get_env_apartments_ids
 from mdp.scene.go2_scene_cfg import Go2MultiApartmentSceneCfg
-from mdp.scene.multi_apartment import restore_grid_origins, use_apartment_origins
+from mdp.scene.multi_apartment import restore_grid_origins, use_apartment_origins, restore_clone_plan, use_round_robin_cloning
 
 class NavEnv(ManagerBasedRLEnv):
     def __init__(self, cfg: ManagerBasedRLEnvCfg, render_mode: str | None = None, **kwargs):
@@ -28,6 +28,7 @@ class NavEnv(ManagerBasedRLEnv):
             num_apt_prims = sum(1 for name in vars(cfg.scene) if name.startswith("apt_"))
             assert num_apt_prims == num_apts, f"Scene has {num_apt_prims} apartments but {num_apts} scene paths"
             use_apartment_origins(get_apartment_origins())
+            use_round_robin_cloning()
         else:
             assert num_apts == 1, "A list of scene paths needs the multi-apartment scene"
 
@@ -35,6 +36,7 @@ class NavEnv(ManagerBasedRLEnv):
             super().__init__(cfg, render_mode, **kwargs)
         finally: 
             restore_grid_origins()
+            restore_clone_plan
         
         env_apt_ids = get_env_apartments_ids(self.num_envs, num_apts).to(self.device)
         if self.multi_apartment:

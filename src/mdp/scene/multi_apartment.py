@@ -25,3 +25,30 @@ def spawn_static_apartment(prim_path, cfg, translation=None, orientation=None, *
     if dyn.IsValid():
         dyn.SetActive(False)
     return prim
+
+_ORIGINAL_MAKE_CLONE_PLAN = cloner.make_clone_plan
+
+def use_round_robin_cloning() -> None:
+    """ give env i the variant i % K of every multi-variant asset"""
+
+    def round_robin_clone_plan(sources, destinations, num_clones, clone_strategy=None, device="cpu"):
+        return _ORIGINAL_MAKE_CLONE_PLAN(sources, destinations, num_clones, cloner.sequential, device)
+    
+    cloner.make_clone_plan = round_robin_clone_plan
+
+def restore_clone_plan() -> None:
+    cloner.make_clone_plan = _ORIGINAL_MAKE_CLONE_PLAN
+
+def spawn_dynamic_only(prim_path, cfg, translation=None, orientation=None, **kwargs):
+    " spawn an apartment USD and keep only its doors and chairs"
+    prim = sim_utils.spawn_from_usd(prim_path, cfg, translation, orientation, **kwargs)
+    meshes = prim.GetChild("Meshes")
+    if not meshes.IsValid():
+        raise RuntimeError(f"{prim_path}/Meshes not found. Children: {[c.GetName() for c in prim.GetChildren()]} ")
+    for child in meshes.GetChildren():
+        if child.GetName() != "dynamic_objects":
+            child.SetActive(False)
+    rendering = prim.GetChild("Rendering")
+    if rendering.IsValid():
+        rendering.SetActive(False)
+    return prim
