@@ -7,11 +7,12 @@ Test of NavEnv with the multi-apartment scene.
   3. lidar: the robots see walls, and every lidar hit lies inside the robot's own apartment
   4. while running: no NaN/inf in observations and rewards, episodes end and reset,
      robots stay inside their apartment and above the floor
-Prints the environment steps per second at the end.
 
 Example:
     # multi-apartment
     env_isaaclab/bin/python scripts/multiscene/test_nav_env.py --task go2_lidar_multi --maps 3 40 21 --num_envs 12 --headless
+    # multi-apartment with per-robot doors/chairs
+    env_isaaclab/bin/python scripts/multiscene/test_nav_env.py --task go2_lidar_multi_full --maps 3 40 21 --num_envs 12 --headless
     # the original single-map task must still work
     env_isaaclab/bin/python scripts/multiscene/test_nav_env.py --task go2_lidar_full --maps 40 --num_envs 4 --headless
 """
@@ -84,7 +85,7 @@ def robots_on_free_cells(env) -> torch.Tensor:
 
 
 def main():
-    multi = args.task == "go2_lidar_multi"
+    multi = args.task.startswith("go2_lidar_multi")
     if multi:
         maps = set_map_names(args.maps)
         scene_path = get_scene_usd_paths()

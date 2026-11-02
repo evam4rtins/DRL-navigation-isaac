@@ -104,3 +104,16 @@ class Go2LidarMultiApartment(ManagerBasedRLEnvCfg):
         self.sim.render_interval = self.decimation
 
         logger.info("Go2 multi-apartment environment with Lidar only initialized")
+
+@configclass
+class Go2LidarMultiApartmentFull(Go2LidarMultiApartment):
+    """ Multi apartment lidar task with doors and chairs where each root has its own copy of its doors and chairs"""
+
+    events = events.FullEventsCfg()
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        self.scene = scene.Go2MultiApartmentDynSceneCfg(
+            num_envs=1, env_spacing=0.0, replicate_physics=False, filter_collisions=True
+        )
+        logger.info("Go2 multi-apartment environment with doors/chairs and Lidar only initialized")

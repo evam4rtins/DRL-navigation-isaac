@@ -15,7 +15,7 @@ from cfg.CFG import get_scene_usd_path, get_apartment_origins, get_scene_usd_pat
 from mdp.scene.moving_obstacles_cfg import get_obstacles_cfg
 from mdp.scene.robot_cfg import UNITREE_GO2_CFG
 from mdp.scene.multi_apartment import spawn_static_apartment, spawn_dynamic_only
-
+from mdp.scene.per_env_ray_caster import PerEnvMultiMeshRayCaster
 
 @configclass
 class Go2BaseCfg(InteractiveSceneCfg):
@@ -177,6 +177,24 @@ class Go2MultiApartmentDynSceneCfg(Go2MultiApartmentSceneCfg):
             assets_cfg=[sim.UsdFileCfg(usd_path=str(p), func=spawn_dynamic_only) for p in get_scene_usd_paths()],
             random_choice=False,
             ),
+        )
+
+        dyn_targets = [
+            MultiMeshRayCasterCfg.RaycastTargetCfg(
+                prim_expr="{ENV_REGEX_NS}/dyn/Meshes/dynamic_objects/other/door_.*/Meshes/door_.*/group_.*",
+                is_shared=False,
+                track_mesh_transforms=True,  # doors swing on their hinges
+            ), 
+            MultiMeshRayCasterCfg.RaycastTargetCfg(
+                prim_expr="{ENV_REGEX_NS}/dyn/Meshes/dynamic_objects/other/chair_.*/Meshes/chair_.*",
+                is_shared=False,
+                track_mesh_transforms=True,  # chairs are moved at reset and can be pushed
+            ),
+        ]
+        
+        self.lidar = self.lidar.replace(
+            class_type=PerEnvMultiMeshRayCaster, 
+            mesh_prim_paths=[*self.lidar.mesh_prim_paths, *dyn_targets],
         )
     
 

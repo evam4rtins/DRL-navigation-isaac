@@ -31,9 +31,14 @@ def update_episode_counters(env: NavEnv, env_ids: torch.Tensor) -> None:
 
     env.episode_counter[env_ids] += 1
 
+def _dyn_root(env: NavEnv) -> str:
+    if not hasattr(env, "_dyn_root_name"):
+        stage = omni.usd.get_context().get_stage()
+        env._dyn_root_name = "dyn" if stage.GetPrimAtPath("/World/envs/env_0/dyn").IsValid() else "environment"
+    return env._dyn_root_name
 
-def _collect_door_prims(stage: Usd.Stage, env_ns: str) -> list[Usd.Prim]:
-    root_path = f"{env_ns}/environment/Meshes/dynamic_objects/other"
+def _collect_door_prims(stage: Usd.Stage, env_ns: str, root: str = "environment") -> list[Usd.Prim]:
+    root_path = f"{env_ns}/{root}/Meshes/dynamic_objects/other"
     root_prim = stage.GetPrimAtPath(root_path)
 
     joint_prims = []
@@ -59,25 +64,28 @@ def door_distribution(num_envs: int, num_doors: int, p_open: float = 0.80, p_clo
 
 def randomize_door_positions(env: NavEnv, env_ids: torch.Tensor) -> None:
     stage = omni.usd.get_context().get_stage()
+    root = _dyn_root(env)
+
+    if env_ids is None:
+        env_ids = torch.arange(env.num_envs, device=env.device)
 
     if not hasattr(env, "_door_prim_paths"):
         env._door_prim_paths = {}
 
-    if not hasattr(env, "num_doors"):
-        env_ns = "/World/envs/env_0"
-        env.num_doors = len(_collect_door_prims(stage, env_ns))
+    env_ids = env_ids.cpu().tolist()
 
-    door_positions = door_distribution(env.num_envs, env.num_doors, p_open=0.8, p_closed=0.15)
+    for env_id in env_ids:
+        if env_id not in env._door_prim_paths:
+            env._door_prim_paths[env_id] = _collect_door_prims(stage, f"/World/envs/env_{env_id}", root)
 
-    for env_id in env_ids.cpu().numpy():
-        env_ns = f"/World/envs/env_{env_id}"
-        door_prims = env._door_prim_paths.get(env_id, None)
-        if door_prims is None:
-            door_prims = _collect_door_prims(stage, env_ns)
-            env._door_prim_paths[env_id] = door_prims
+    max_doors = max(len(env._door_prim_paths[env_id]) for env_id in env_ids)
+    if max_doors == 0:
+        return 
+    door_positions = door_distribution(len(env_ids), max_doors, p_open=0.8, p_closed=0.15)
 
-        for door_id, door_prim in enumerate(door_prims):
-            angle = door_positions[env_id, door_id].item()
+    for i, env_id in enumerate(env_ids):
+        for door_id, door_prim in enumerate(env._door_prim_paths[env_id]):
+            angle = door_positions[i, door_id].item()
             door_drive = UsdPhysics.DriveAPI.Apply(door_prim, UsdPhysics.Tokens.angular)
             door_drive.CreateTargetPositionAttr().Set(angle)
             door_drive.CreateTargetVelocityAttr().Set(0)
@@ -171,11 +179,16 @@ def move_obstacle_on_path(env: NavEnv, env_ids: torch.Tensor) -> None:
 
 
 
-CHAIR_BODY_PATTERN = "/World/envs/env_*/environment/Meshes/dynamic_objects/other/chair_*/Meshes/chair_*"
+CHAIR_BODY_PATTERN = "/World/envs/env_*/{root}/Meshes/dynamic_objects/other/chair_*/Meshes/chair_*"
 CHAIR_QUERY_PROXY_ROOT = "/World/chair_query_proxies"
 
 _CHAIR_BODY_PATH_RE = re.compile(r"^/World/envs/env_(\d+)/.*/other/(chair_\d+)/Meshes/")
+_ENV_ID_RE = re.compile(r"^/World/envs/env_(\d+)/")
 
+def _env_apartment(env: NavEnv, env_id: int) -> int:
+    """ Apartment index of an env """
+    apt_ids = getattr(env, "env_apt_ids", None)
+    return 0 if apt_ids is None else int(apt_ids[env_id])
 
 def _pose_matrix(pose: np.ndarray) -> Gf.Matrix4d:
     """Transform of a PhysX pose, stored as (x, y, z) plus a quaternion in (x, y, z, w) order."""
@@ -235,23 +248,30 @@ def _setup_chair_randomization(env: NavEnv) -> None:
       exact convex hull, which ``overlap_mesh`` evaluates at whatever transform we author on it.
     """
     stage = omni.usd.get_context().get_stage()
-    view = env.sim.physics_sim_view.create_rigid_body_view(CHAIR_BODY_PATTERN)
+    root = _dyn_root(env)
+    pattern = CHAIR_BODY_PATTERN.format(root=root)
+    view = env.sim.physics_sim_view.create_rigid_body_view(pattern)
     if view is None or view._backend is None or view.count == 0:
         raise RuntimeError(f"no chair rigid bodies matched '{CHAIR_BODY_PATTERN}'")
 
     env._chair_view = view
     env._chair_home = wp.to_torch(view.get_transforms()).view(-1, 7).clone().cpu().numpy()
     env._chair_rows = {}  # (env id, chair name) -> row in the rigid body view
+    env._chairs_of_env = {} # env id -> [(chair name, row, proxy key)] 
     for row, path in enumerate(view.prim_paths):
         match = _CHAIR_BODY_PATH_RE.match(path)
         if match is not None:
-            env._chair_rows[(int(match.group(1)), match.group(2))] = row
+            env_id, name = int(match.group(1)), match.group(2)                 # ←
+            env._chair_rows[(env_id, name)] = row                              # ←
+            key = (_env_apartment(env, env_id), name)                          # ←
+            env._chairs_of_env.setdefault(env_id, []).append((name, row, key)) # ←
 
     # the chairs are clones of each other, so one proxy per chair name serves every environment
     env._chair_proxies = {}
     stage.DefinePrim(CHAIR_QUERY_PROXY_ROOT, "Scope")
-    for (_, name), row in sorted(env._chair_rows.items()):
-        if name in env._chair_proxies:
+    for (env_id, name), row in sorted(env._chair_rows.items()):
+        key = (_env_apartment(env, env_id), name)
+        if key in env._chair_proxies:
             continue
 
         points = _collision_points_in_actor_frame(stage.GetPrimAtPath(view.prim_paths[row]), env._chair_home[row])
@@ -259,7 +279,7 @@ def _setup_chair_randomization(env: NavEnv) -> None:
         vertices = points[hull.vertices]
         renumbered = {old: new for new, old in enumerate(hull.vertices)}
 
-        mesh = UsdGeom.Mesh.Define(stage, f"{CHAIR_QUERY_PROXY_ROOT}/{name}")
+        mesh = UsdGeom.Mesh.Define(stage, f"{CHAIR_QUERY_PROXY_ROOT}/apt{key[0]}_{name}")
         mesh.CreatePointsAttr([Gf.Vec3f(*vertex) for vertex in vertices])
         mesh.CreateFaceVertexCountsAttr([3] * len(hull.simplices))
         mesh.CreateFaceVertexIndicesAttr([int(renumbered[i]) for simplex in hull.simplices for i in simplex])
@@ -268,7 +288,7 @@ def _setup_chair_randomization(env: NavEnv) -> None:
 
         # widest reach of the hull around the chair's origin in the ground plane, for the robot check
         world_vertices = vertices @ np.asarray(_pose_matrix(env._chair_home[row]), dtype=np.float64)[:3, :3]
-        env._chair_proxies[name] = (
+        env._chair_proxies[key] = (
             mesh.GetPrim().GetAttribute("xformOp:transform"),
             _encode_query_path(mesh.GetPath()),
             float(np.linalg.norm(world_vertices[:, :2], axis=1).max()),
@@ -281,8 +301,8 @@ def _setup_chair_randomization(env: NavEnv) -> None:
 
     # a chair at its authored pose rests on the floor, so a query that finds nothing there is reading
     # an empty scene, and every later candidate would be accepted, the ones inside a wall included
-    (_, probe_name), probe_row = next(iter(sorted(env._chair_rows.items())))
-    xform_attr, encoded_path, _ = env._chair_proxies[probe_name]
+    (probe_env, probe_name), probe_row = next(iter(sorted(env._chair_rows.items())))
+    xform_attr, encoded_path, _ = env._chair_proxies[(_env_apartment(env, probe_env), probe_name)] 
     xform_attr.Set(_pose_matrix(env._chair_home[probe_row]))
     if get_physx_scene_query_interface().overlap_mesh(*encoded_path, lambda hit: False, True) == 0:
         raise RuntimeError("the scene query reports no geometry at a chair's authored pose")
@@ -290,17 +310,23 @@ def _setup_chair_randomization(env: NavEnv) -> None:
     logger.info(f"Chair randomization: {len(env._chair_proxies)} chairs over {view.count} rigid bodies")
 
 
-def _chair_collides(env: NavEnv, chair_name: str, env_id: int, pose: np.ndarray) -> bool:
+def _chair_collides(env: NavEnv, proxy_key: tuple[int, str], env_id: int, pose: np.ndarray) -> bool:
     """Whether the chair's convex hull, placed at pose, touches geometry it has to stay clear of."""
-    xform_attr, encoded_path, _ = env._chair_proxies[chair_name]
+    xform_attr, encoded_path, _ = env._chair_proxies[proxy_key]
     xform_attr.Set(_pose_matrix(pose))
 
-    own_prefix = f"/World/envs/env_{env_id}/environment/Meshes/dynamic_objects/other/{chair_name}/"
+    chair_name = proxy_key[1]
+    own_prefix = f"/World/envs/env_{env_id}/{_dyn_root(env)}/Meshes/dynamic_objects/other/{chair_name}/"
     blocked = False
 
     def report(hit) -> bool:
         nonlocal blocked
-        if hit.collision.startswith(own_prefix) or env._chair_ignored_re.search(hit.collision):
+        other_env = _ENV_ID_RE.match(hit.collision)
+        if (
+            hit.collision.startswith(own_prefix) 
+            or env._chair_ignored_re.search(hit.collision)
+            or (other_env is not None and int(other_env.group(1)) != env_id)
+        ):
             return True  # keep traversing
         blocked = True
         return False  # the first real hit is enough
@@ -345,11 +371,8 @@ def randomize_chair_positions(
 
     rows = []
     for env_id in env_ids.cpu().tolist():
-        for chair_name, (_, _, hull_radius_xy) in env._chair_proxies.items():
-            row = env._chair_rows.get((env_id, chair_name))
-            if row is None:
-                continue
-
+        for chair_name, row, key in env._chairs_of_env.get(env_id, []): 
+            hull_radius_xy = env._chair_proxies[key][2]
             rows.append(row)
             # start from the authored pose, so a chair knocked over during the previous episode is
             # put back upright and an unlucky chair simply stays where the scene put it
@@ -361,7 +384,7 @@ def randomize_chair_positions(
                 candidate[:2] += offset  # x/y only, the chair keeps its height and its rotation
                 if np.linalg.norm(candidate[:2] - robot_xy[env_id]) < hull_radius_xy + robot_clearance:
                     continue
-                if not _chair_collides(env, chair_name, env_id, candidate):
+                if not _chair_collides(env, key, env_id, candidate):
                     poses[row] = candidate
                     break
 
