@@ -3,7 +3,7 @@ import sys
 
 from isaaclab.app import AppLauncher
 
-# # add argparse arguments
+# add argparse arguments
 parser = argparse.ArgumentParser(description="Tutorial on basic RL environment.")
 parser.add_argument(
     "--maps",
@@ -51,7 +51,12 @@ parser.add_argument(
 )
 
 parser.add_argument("--task", type=str, default="go2_lidar_full", help="Name of the task configuration to use for training.")
-
+parser.add_argument(
+       "--load_checkpoint",
+       type=str,
+       default=None,
+       help="File in ckpts/unitree_go2_nav/ to start from with --checkpoint (default: load_checkpoint of NavPolicyv2).",
+   )
 AppLauncher.add_app_launcher_args(parser)
 
 # # append AppLauncher cli args
@@ -84,18 +89,18 @@ from cfg.CFG import CHECKPOINT_DIR, get_map_name, get_scene_usd_path, set_map_na
 from policy.NavPolicyv2 import go2_policy_cfg, load_policy_checkpoint, make_go2_policy_cfg
 from tasks.task_utils import get_env_config
 
-MULTI_APARTMENT_TASKS = {"go2_lidar_multi"}
+MULTI_APARTMENT_TASKS = {"go2_lidar_multi", "go2_lidar_multi_full"}
 
 if args_cli.task in MULTI_APARTMENT_TASKS:
     MAP_NAMES = set_map_names(args_cli.maps)
-    SCENE_PATH = get_scene_usd_paths()  # one scene per apartment
-    RUN_NAME = f"multi_{len(MAP_NAMES)}maps"  
+    SCENE_PATH = get_scene_usd_paths()
+    RUN_NAME = f"multi_{len(MAP_NAMES)}maps" + ("_full" if args_cli.task.endswith("_full") else "")
 else:
     if len(args_cli.maps) != 1:
         raise ValueError(f"Task {args_cli.task} uses one map, got {args_cli.maps}. Use --task go2_lidar_multi.")
     MAP_NAMES = [set_map_name(args_cli.maps[0])]
     SCENE_PATH = get_scene_usd_path()
-    RUN_NAME = MAP_NAMES[0]  
+    RUN_NAME = MAP_NAMES[0] 
 
 
 @hydra.main(config_path=None)
@@ -163,7 +168,7 @@ def run_simulator(cfg: DictConfig):
         ckpt_path = get_checkpoint_path(
             log_path=os.path.join(get_original_cwd(), "ckpts"),
             run_dir=policy_cfg["load_run"],
-            checkpoint=policy_cfg["load_checkpoint"],
+            checkpoint=args_cli.load_checkpoint or policy_cfg["load_checkpoint"],
         )
         load_policy_checkpoint(ppo_runner, ckpt_path)
 
