@@ -42,3 +42,35 @@ class CurriculumCfg:
 #             "episode_end": 600,  # full obstacle probability
 #         }
 #     )
+
+@configclass
+class CurriculumStepsCfg:
+    """ same curriculum as CurriculumCfg scheduled in total simulation steps instead of episodes per robot """
+    
+    obstacle_weight = CurriculumTermCfg(
+        func=curriculum.update_collision_weight,
+        params={
+            "weight_step_size": 0.05,
+            "max_weight": 1.5,
+            "step_start": 0.4e6,
+            "update_every_steps": 0.256e6,
+        }
+    )
+
+    collision_thresh = CurriculumTermCfg(
+        func=curriculum.collision_termination_threshold,
+        params={
+            "step_start": 2.56e6,
+            "step_end": 7.68e6,
+        }
+    )
+
+    nominal_weight = CurriculumTermCfg(
+        func=curriculum.nominal_policy_weight,
+        params={
+            "step_start": 0.64e6,
+            "step_end": 3.2e6,
+        }
+    )
+
+    total_steps = CurriculumTermCfg(func=curriculum.total_env_steps)

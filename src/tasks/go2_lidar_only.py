@@ -82,7 +82,7 @@ class Go2LidarMultiApartment(ManagerBasedRLEnvCfg):
     rewards = rewards.RewardsCfg()
     terminations = terminations.TerminationsCfg()
     events = events.BaseEventsCfg()
-    curriculum = curriculum.CurriculumCfg()
+    curriculum = curriculum.CurriculumStepsCfg()
 
     obs_groups = { 
         "policy" : ["velocity_buffer", "action_buffer", "global_plan", "lidar"],

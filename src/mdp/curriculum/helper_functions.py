@@ -5,21 +5,47 @@ from navigation_env.NavigationEnv import NavEnv
 
 ## Curriculum manager calls this only when one or more envs are reset, so the internal
 ## episode_length_buf contains the lengths of the episodes just before reset.
+
+def _total_env_steps(env: NavEnv) -> int:
+    """ simulation steps collectd by all robots together since start of training run """
+    return int(env.common_step_counter) * env.num_envs
+
+def _schedule_coeff(current: float, start: float, end: float) -> float:
+    if current < start:
+        return 1.0
+    if current > end: 
+        return 0.0
+    return 1.0 - (current - start)/(end - start)
+
 def update_collision_weight(
-    env: NavEnv, env_ids: torch.Tensor, weight_step_size: float, max_weight: float, episode_start: int = 0
+    env: NavEnv, 
+    env_ids: torch.Tensor, 
+    weight_step_size: float, 
+    max_weight: float, 
+    episode_start: int = 0, 
+    step_start: float | None = None,
+    update_every_steps: float | None = None,
 ) -> float:
+    
     if not hasattr(env, "_running_mean_var"):  # ensure attribute exists
         env._running_mean_var = 0.0
         env._last_update_step = 0
 
     env.path_manager.update_episode_durations(env_ids, env.episode_length_buf[env_ids])
 
-    current_step = env.common_step_counter
-    current_episode = env.episode_counter.mean().item()
     term_cfg = env.reward_manager.get_term_cfg("collision")
 
+    if step_start is not None:
+        current_step = _total_env_steps(env)
+        interval = update_every_steps if update_every_steps is not None else 1000 * env.num_envs
+        not_started = current_step < step_start
+    else:
+        current_step = env.common_step_counter
+        interval = 1000
+        not_started = env.episode_counter.mean().item() < episode_start
+
     # check curriculum conditions once every 1000 steps
-    if current_step - env._last_update_step < 1000 or current_episode < episode_start:
+    if current_step - env._last_update_step < interval or not_started:
         return term_cfg.weight
     env._last_update_step = current_step
 
@@ -45,27 +71,53 @@ def update_collision_weight(
     return term_cfg.weight
 
 
-def _progress_coeff(env: NavEnv, episode_start: int, episode_end: int) -> float:
+def _progress_coeff(
+        env: NavEnv, 
+        episode_start: int, 
+        episode_end: int,
+        step_start: float | None = None,
+        step_end: float | None = None,
+        ) -> float:
+    if step_start is not None and step_end is not None:
+        return _schedule_coeff(_total_env_steps(env), step_start, step_end)
     current_episode = env.episode_counter.mean().item() * 0.75  # TODO: check correction factor
-    if current_episode < episode_start:
-        return 1.0
-    elif current_episode > episode_end:
-        return 0.0
-    else:
-        return 1.0 - (current_episode - episode_start) / (episode_end - episode_start)
+    return _schedule_coeff(current_episode, episode_start, episode_end)
 
-
-def collision_termination_threshold(env: NavEnv, env_ids: torch.Tensor, episode_start: int = 50, episode_end: int = 250) -> float:
-    termination_coeff = _progress_coeff(env, episode_start, episode_end)
+def collision_termination_threshold(
+        env: NavEnv, 
+        env_ids: torch.Tensor, 
+        episode_start: int = 50, 
+        episode_end: int = 250, 
+        step_start: float | None = None, 
+        step_end: float | None = None,
+        ) -> float:
+    termination_coeff = _progress_coeff(env, episode_start, episode_end, step_start, step_end)
     env.collision_termination_thresh = max(termination_coeff, 0.01)
     return env.collision_termination_thresh
 
 
-def nominal_policy_weight(env: NavEnv, env_ids: torch.Tensor, episode_start: int = 50, episode_end: int = 250) -> float:
+def nominal_policy_weight(
+        env: NavEnv, 
+        env_ids: torch.Tensor, 
+        episode_start: int = 50, 
+        episode_end: int = 250, 
+        step_start: float | None = None,
+        step_end: float | None = None,
+        ) -> float:
     # linearly decay nominal policy weight from 1.0 to 0.0 over the ep interval
-    env.nominal_weight = _progress_coeff(env, episode_start, episode_end)
+    env.nominal_weight = _progress_coeff(env, episode_start, episode_end, step_start, step_end)
     return env.nominal_weight
 
-def add_path_obstacles(env: NavEnv, env_ids: torch.Tensor, episode_start: int = 50, episode_end: int = 250) -> None:
-    env.obstacle_prob = 1 - _progress_coeff(env, episode_start, episode_end)
+def total_env_steps(env: NavEnv, env_ids: torch.Tensor) -> float:
+    return float(_total_env_steps(env))
+
+def add_path_obstacles(
+        env: NavEnv, 
+        env_ids: torch.Tensor, 
+        episode_start: int = 50, 
+        episode_end: int = 250,
+        step_start: float | None = None,
+        step_end: float | None = None,
+        ) -> None:
+    env.obstacle_prob = 1 - _progress_coeff(env, episode_start, episode_end, step_start, step_end)
     return env.obstacle_prob
