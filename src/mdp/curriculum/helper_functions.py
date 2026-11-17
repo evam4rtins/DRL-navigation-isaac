@@ -6,9 +6,15 @@ from navigation_env.NavigationEnv import NavEnv
 ## Curriculum manager calls this only when one or more envs are reset, so the internal
 ## episode_length_buf contains the lengths of the episodes just before reset.
 
+_STEP_OFFSET = 0.0
+
+def set_curriculum_step_offset(steps: float) -> None:
+    global _STEP_OFFSET
+    _STEP_OFFSET = float(steps)
+
 def _total_env_steps(env: NavEnv) -> int:
     """ simulation steps collectd by all robots together since start of training run """
-    return int(env.common_step_counter) * env.num_envs
+    return int(env.common_step_counter) * env.num_envs + _STEP_OFFSET
 
 def _schedule_coeff(current: float, start: float, end: float) -> float:
     if current < start:

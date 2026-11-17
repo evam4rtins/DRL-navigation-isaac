@@ -44,6 +44,19 @@ parser.add_argument(
     help="Name of the WandB project for logging",
 )
 parser.add_argument(
+    "--curriculum_start_steps",
+    type=float,
+    default=0.0,
+    help="Continue a training: total steps already done before, so step-based curriculum terms "
+    "continue from there instead of starting over. Use together with --checkpoint.",
+)
+parser.add_argument(
+    "--collision_weight",
+    type=float,
+    default=None,
+    help="Start value of the adaptive collision reward weight . Default: the value in the rewards config.",
+)
+parser.add_argument(
     "--debug-vis",
     action="store_true",
     default=False,
@@ -88,6 +101,9 @@ from rsl_rl.runners import OnPolicyRunner
 from cfg.CFG import CHECKPOINT_DIR, get_map_name, get_scene_usd_path, set_map_name, get_scene_usd_paths, set_map_names
 from policy.NavPolicyv2 import go2_policy_cfg, load_policy_checkpoint, make_go2_policy_cfg
 from tasks.task_utils import get_env_config
+from mdp.curriculum.helper_functions import set_curriculum_step_offset
+from tasks.task_utils import get_env_config
+
 
 MULTI_APARTMENT_TASKS = {"go2_lidar_multi", "go2_lidar_multi_full"}
 
@@ -121,6 +137,14 @@ def run_simulator(cfg: DictConfig):
     environment_cfg.seed = args_cli.seed if args_cli.seed is not None else 42
     environment_cfg.log_dir = log_dir
 
+    # continuing a training: the curriculum continues where the previous run stopped
+    if args_cli.curriculum_start_steps > 0:
+        set_curriculum_step_offset(args_cli.curriculum_start_steps)
+        logger.info(f"Curriculum continues from {args_cli.curriculum_start_steps:.3g} total steps")
+    if args_cli.collision_weight is not None:
+        environment_cfg.rewards.collision.weight = args_cli.collision_weight
+        logger.info(f"Collision reward weight starts at {args_cli.collision_weight}")
+    
     # Create the whole scene
     logger.info("Creating gym environment...")
     gym.register(
