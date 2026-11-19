@@ -16,6 +16,7 @@ from mdp.scene.moving_obstacles_cfg import get_obstacles_cfg
 from mdp.scene.robot_cfg import UNITREE_GO2_CFG
 from mdp.scene.multi_apartment import spawn_static_apartment, spawn_dynamic_only
 from mdp.scene.per_env_ray_caster import PerEnvMultiMeshRayCaster
+from mdp.scene.camera import FRONT_CAMERA_CFG
 
 @configclass
 class Go2BaseCfg(InteractiveSceneCfg):
@@ -197,6 +198,15 @@ class Go2MultiApartmentDynSceneCfg(Go2MultiApartmentSceneCfg):
             mesh_prim_paths=[*self.lidar.mesh_prim_paths, *dyn_targets],
         )
     
+
+@configclass
+class Go2MultiApartmentDynVisionSceneCfg(Go2MultiApartmentDynSceneCfg):
+    """ Doors/chairs multi-apartment scene with a front RGB camera per robot. """
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.camera = FRONT_CAMERA_CFG
+
 
 CAMERA_CFG = TiledCameraCfg(
     prim_path="{ENV_REGEX_NS}/Go2/base/front_cam",

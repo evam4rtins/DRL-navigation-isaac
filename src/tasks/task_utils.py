@@ -10,6 +10,7 @@ _TASK_DICT = {
     "go2_vision_depth_full": Go2VisionDepthFull,
     "go2_lidar_multi": Go2LidarMultiApartment, 
     "go2_lidar_multi_full": Go2LidarMultiApartmentFull,
+     "go2_vision_multi_full": Go2VisionMultiApartmentFull,
 }
 
 

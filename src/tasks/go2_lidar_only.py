@@ -117,3 +117,14 @@ class Go2LidarMultiApartmentFull(Go2LidarMultiApartment):
             num_envs=1, env_spacing=0.0, replicate_physics=False, filter_collisions=True
         )
         logger.info("Go2 multi-apartment environment with doors/chairs and Lidar only initialized")
+
+@configclass
+class Go2VisionMultiApartmentFull(Go2LidarMultiApartmentFull):
+    """ Doors/chairs multi-apartment task with a front RGB camera on every robot. """
+    
+    def __post_init__(self) -> None:
+            super().__post_init__()
+            self.scene = scene.Go2MultiApartmentDynVisionSceneCfg(
+                num_envs=1, env_spacing=0.0, replicate_physics=False, filter_collisions=True
+            )
+            logger.info("Go2 multi-apartment environment with doors/chairs, Lidar and front camera initialized")

@@ -14,6 +14,7 @@ from navigation_env.managers.path_manager import PathManager
 from cfg.CFG import get_apartment_origins, get_env_apartments_ids
 from mdp.scene.go2_scene_cfg import Go2MultiApartmentSceneCfg
 from mdp.scene.multi_apartment import restore_grid_origins, use_apartment_origins, restore_clone_plan, use_round_robin_cloning
+from mdp.scene.camera import follow_robot, restore_scene_init, use_scene_partitions
 
 class NavEnv(ManagerBasedRLEnv):
     def __init__(self, cfg: ManagerBasedRLEnvCfg, render_mode: str | None = None, **kwargs):
@@ -24,6 +25,9 @@ class NavEnv(ManagerBasedRLEnv):
         num_apts = len(scene_paths)
 
         self.multi_apartment = isinstance(cfg.scene, Go2MultiApartmentSceneCfg)
+        self.has_front_camera = self.multi_apartment and getattr(cfg.scene, "camera", None) is not None
+        if self.has_front_camera:
+            use_scene_partitions()
         if self.multi_apartment:
             num_apt_prims = sum(1 for name in vars(cfg.scene) if name.startswith("apt_"))
             assert num_apt_prims == num_apts, f"Scene has {num_apt_prims} apartments but {num_apts} scene paths"
@@ -34,9 +38,19 @@ class NavEnv(ManagerBasedRLEnv):
 
         try:
             super().__init__(cfg, render_mode, **kwargs)
-        finally: 
+        finally:
             restore_grid_origins()
-            restore_clone_plan
+            restore_clone_plan()
+            restore_scene_init()
+
+        if self.has_front_camera:
+            sim_render = self.sim.render
+
+            def render_from_robots(*args, **kw):
+                follow_robot(self.scene)
+                return sim_render(*args, **kw)
+
+            self.sim.render = render_from_robots
         
         env_apt_ids = get_env_apartments_ids(self.num_envs, num_apts).to(self.device)
         if self.multi_apartment:
@@ -176,3 +190,4 @@ class NavEnv(ManagerBasedRLEnv):
         robot_quat = self.scene["robot"].data.root_quat_w.torch[0]
 
         self.camera_manager.update(robot_pos, robot_quat, smoothing_factor=smoothing)
+        

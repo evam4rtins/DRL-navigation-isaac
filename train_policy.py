@@ -74,6 +74,9 @@ AppLauncher.add_app_launcher_args(parser)
 
 # # append AppLauncher cli args
 args_cli, hydra_argv = parser.parse_known_args()
+if args_cli.task == "go2_vision_multi_full":
+    args_cli.enable_cameras = True
+    args_cli.kit_args = ((args_cli.kit_args or "") + " --/renderer/scenePartitioning/enabled=true").strip()
 # args_cli.enable_cameras = True  # always true for go2 cfg
 
 # args_cli.kit_args = (args_cli.kit_args or "") + " --enable isaacsim.sensors.rtx"
@@ -105,7 +108,7 @@ from mdp.curriculum.helper_functions import set_curriculum_step_offset
 from tasks.task_utils import get_env_config
 
 
-MULTI_APARTMENT_TASKS = {"go2_lidar_multi", "go2_lidar_multi_full"}
+MULTI_APARTMENT_TASKS = {"go2_lidar_multi", "go2_lidar_multi_full", "go2_vision_multi_full"}
 
 if args_cli.task in MULTI_APARTMENT_TASKS:
     MAP_NAMES = set_map_names(args_cli.maps)
@@ -224,3 +227,4 @@ if __name__ == "__main__":
         traceback.print_exc()
     finally:
         simulation_app.close()
+        
