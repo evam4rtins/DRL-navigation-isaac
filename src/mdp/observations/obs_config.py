@@ -3,7 +3,7 @@ from isaaclab.managers import ObservationTermCfg as ObsTerm
 from isaaclab.utils import configclass
 
 import mdp.observations.helper_functions as observations
-
+from mdp.observations.dino import DinoTokens
 
 # ------------ GROUPS ------------
 @configclass
@@ -19,6 +19,11 @@ class _VelocityGroup(ObsGroup):
 @configclass
 class _VisionGroup(ObsGroup):
     vision = ObsTerm(func=observations.VisionEncoder(encoder="vit"))
+
+
+@configclass
+class _DinoGroup(ObsGroup):
+    tokens = ObsTerm(func=DinoTokens(), params={"pool": 2})
 
 
 @configclass
@@ -56,6 +61,14 @@ class LidarOnlyCfg:
     lidar = _LidarGroup()
     global_plan = _GlobalPlanGroup()
 
+@configclass
+class LidarDinoCfg:
+    """Teacher observations (lidar) + DINOv2 tokens of the front camera for the student."""
+    action_buffer = _ActionGroup()
+    velocity_buffer = _VelocityGroup()
+    lidar = _LidarGroup()
+    global_plan = _GlobalPlanGroup()
+    dino = _DinoGroup()
 
 @configclass
 class LidarVisionCfg:
