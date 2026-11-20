@@ -1,0 +1,3 @@
+# no distillation, the student starts PPO from random weights.
+name: scratch
+distill: {enabled: false}

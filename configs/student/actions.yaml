@@ -1,0 +1,3 @@
+# the student imitates the teacher's actions only.
+name: actions
+transfer: {action: 1.0, value: 0.0, lidar: 0.0}

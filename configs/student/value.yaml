@@ -1,0 +1,3 @@
+# actions and the teacher's value distilled into the student's critic.
+name: value
+transfer: {action: 1.0, value: 0.5, lidar: 0.0}

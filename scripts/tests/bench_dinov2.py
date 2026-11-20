@@ -1,9 +1,5 @@
 """
 Cost of a frozen DINOv2 encoder on a batch of camera images.
-
-For every model and batch size: forward time (ms), images/s and peak GPU memory, in fp32 and in bf16 autocast.
-The batch size is the number of robots: every env step encodes one 224x224 image per robot.
-
 """
 
 import argparse

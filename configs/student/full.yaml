@@ -1,0 +1,3 @@
+# actions, value and representation distillation.
+name: full
+transfer: {action: 1.0, value: 0.5, lidar: 1.0}

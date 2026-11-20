@@ -1,0 +1,3 @@
+#  actions and the adapter predicts the teacher's lidar profile.
+name: representation
+transfer: {action: 1.0, value: 0.0, lidar: 1.0}

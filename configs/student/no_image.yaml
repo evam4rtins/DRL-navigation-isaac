@@ -1,0 +1,5 @@
+# no camera at all (path + past velocities + past actions).
+# it measures how much of the teacher's behaviour can be predicted without seeing (what the image has to add).
+name: no_image
+student: {image: false}
+transfer: {action: 1.0, value: 0.0, lidar: 0.0}
